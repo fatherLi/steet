@@ -31,13 +31,15 @@ hikvision:
       database: 0
 
 # ====================================================
-# XXL-JOB Executor 配置
+# XXL-JOB Executor 配置 (企业级集群版)
 # ====================================================
 xxl:
   job:
     admin:
-      addresses: http://127.0.0.1:8080/xxl-job-admin
+      # 支持配置多个调度中心地址，逗号分隔，实现 Admin 节点的高可用容灾
+      addresses: http://127.0.0.1:8080/xxl-job-admin,http://127.0.0.2:8080/xxl-job-admin
     executor:
       appname: street-iot-adapter-executor
-      port: 9999
+      # 端口配置为 -1，XXL-JOB 会自动寻找可用端口并注册，完美解决单机多实例时的端口冲突问题，助力横向扩容！
+      port: -1
 

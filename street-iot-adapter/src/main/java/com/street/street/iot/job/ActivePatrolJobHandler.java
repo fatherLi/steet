@@ -43,9 +43,21 @@ public class ActivePatrolJobHandler {
      */
     @XxlJob("patrolGpsPullJob")
     public void pullGpsJob() {
-        XxlJobHelper.log("开始执行海康设备定位主动拉取任务...");
+        // 1. 获取 XXL-JOB 分片参数 (企业级并发核心)
+        // shardIndex: 当前机器的编号 (例如 3台机器的话就是 0, 1, 2)
+        // shardTotal: 参与处理此任务的总机器数 (例如 3)
+        int shardIndex = XxlJobHelper.getShardIndex();
+        int shardTotal = XxlJobHelper.getShardTotal();
+        
+        // 如果未开启分片广播模式（即单机路由），默认设为 0 和 1
+        if (shardTotal == 0) {
+            shardIndex = 0;
+            shardTotal = 1;
+        }
 
-        // 1. 获取当前所有正在巡河的用户
+        XxlJobHelper.log("开始执行海康设备定位主动拉取任务。分片模式：[{}/{}]", shardIndex, shardTotal);
+
+        // 2. 获取当前所有正在巡河的用户
         Set<String> activeUsers = redisTemplate.opsForSet().members(ACTIVE_USERS_KEY);
         if (activeUsers == null || activeUsers.isEmpty()) {
             XxlJobHelper.log("当前无人在巡河，跳过拉取。");
@@ -61,9 +73,18 @@ public class ActivePatrolJobHandler {
 
         int successCount = 0;
         
-        // 3. 遍历活跃用户，通过他们的 userId 反查绑定的 deviceCode
+        // 4. 遍历活跃用户，通过他们的 userId 反查绑定的 deviceCode
         // 实际企业开发中，反查过程一般从数据库查询，这里为了演示，双向遍历映射表
         for (String userIdStr : activeUsers) {
+            
+            // ========== 核心企业级分片路由算法 ==========
+            // 将用户的 ID 经过 hashCode 计算后对集群机器总数取模
+            // 如果结果不等于当前机器的编号，说明这个用户归别的机器管，直接跳过！
+            if (Math.abs(userIdStr.hashCode()) % shardTotal != shardIndex) {
+                continue;
+            }
+            // ===========================================
+
             Long targetUserId = Long.valueOf(userIdStr);
             String targetDeviceCode = null;
             
@@ -91,7 +112,7 @@ public class ActivePatrolJobHandler {
             }
         }
         
-        XxlJobHelper.log("定位拉取任务执行完成，共成功拉取 " + successCount + " 个设备。");
+        XxlJobHelper.log("定位拉取任务执行完成，本分片节点共成功拉取 " + successCount + " 个设备。");
     }
 
     /**
