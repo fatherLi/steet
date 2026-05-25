@@ -1,0 +1,29 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: street-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+    gateway:
+      routes:
+        # 物联网网关适配层路由
+        - id: iot_adapter_route
+          uri: lb://street-iot-adapter
+          predicates:
+            - Path=/api/v1/hikvision/**, /api/v1/patrol/hardware/**
+        
+        # 核心巡河业务层路由
+        - id: patrol_web_route
+          uri: lb://street-patrol
+          predicates:
+            - Path=/api/v1/patrol/web/**
+            
+        # WebSocket 路由
+        - id: patrol_ws_route
+          uri: lb:ws://street-patrol
+          predicates:
+            - Path=/ws/patrol/**

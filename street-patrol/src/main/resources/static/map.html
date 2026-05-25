@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>河长巡河轨迹实时演示 (Spring Cloud 微服务版)</title>
+    <style>
+        html, body, #container { width: 100%; height: 100%; margin: 0; padding: 0; }
+        #panel {
+            position: absolute; top: 20px; right: 20px; background-color: white;
+            padding: 15px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); z-index: 999;
+        }
+        button { padding: 8px 15px; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { opacity: 0.8; }
+    </style>
+</head>
+<body>
+<div id="container"></div>
+<div id="panel">
+    <h3>巡河实时轨迹</h3>
+    <p>河长ID: <span id="userIdSpan">1001</span></p>
+    <p>状态: <span id="wsStatus" style="color: red;">未连接</span></p>
+    <button onclick="startSimulate()" style="background: #1890ff;">模拟标准HTTP上报</button>
+    <button onclick="startHikvisionSimulate()" style="background: #52c41a; margin-top: 10px;">模拟海康平台推送</button>
+</div>
+
+<script type="text/javascript">
+    window._AMapSecurityConfig = { securityJsCode: 'YOUR_SECURITY_CODE', }
+</script>
+<script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=YOUR_AMAP_KEY"></script>
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+<script>
+    const userId = 1001; 
+    let map, polyline, marker;
+    let path = []; 
+    let ws;
+
+    function initMap() {
+        map = new AMap.Map('container', { zoom: 15, center: [116.397428, 39.90923] });
+        polyline = new AMap.Polyline({
+            path: path, isOutline: true, outlineColor: '#ffeeff', borderWeight: 2,
+            strokeColor: "#3366FF", strokeOpacity: 0.8, strokeWeight: 6,
+            strokeStyle: "solid", lineJoin: 'round', lineCap: 'round', zIndex: 50
+        });
+        polyline.setMap(map);
+        marker = new AMap.Marker({
+            position: [116.397428, 39.90923],
+            icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+            offset: new AMap.Pixel(-9, -31)
+        });
+        marker.setMap(map);
+        fetchTodayTrajectory();
+    }
+
+    async function fetchTodayTrajectory() {
+        try {
+            // Note: the Gateway routes /api/v1/patrol/web/** to street-patrol service
+            // map.html is served from street-patrol (port 8082), but we should call through gateway.
+            // If the user visits localhost:8080/map.html (Gateway will not serve static).
+            // Wait, we can visit localhost:8082/map.html and the calls will hit port 8082 if relative.
+            // To prove Gateway works, frontend calls Gateway port 8080!
+            const gatewayUrl = 'http://127.0.0.1:8080';
+            const res = await axios.get(gatewayUrl + `/api/v1/patrol/web/trajectory/today?userId=${userId}`);
+            if (res.data.code === 200 && res.data.data.length > 0) {
+                const trajectoryList = res.data.data;
+                trajectoryList.sort((a, b) => new Date(a.collectTime) - new Date(b.collectTime));
+                path = trajectoryList.map(item => [item.longitude, item.latitude]);
+                polyline.setPath(path);
+                marker.setPosition(path[path.length - 1]);
+                map.setFitView([polyline]);
+            }
+            connectWebSocket(gatewayUrl);
+        } catch (error) {
+            console.error('获取历史轨迹失败', error);
+            connectWebSocket('http://127.0.0.1:8080');
+        }
+    }
+
+    function connectWebSocket(gatewayUrl) {
+        // WebSocket URL needs to go through gateway (ws://127.0.0.1:8080)
+        const wsUrl = gatewayUrl.replace('http', 'ws') + `/ws/patrol/${userId}`;
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            document.getElementById('wsStatus').innerText = '已连接 (通过网关)';
+            document.getElementById('wsStatus').style.color = 'green';
+        };
+
+        ws.onmessage = (event) => {
+            const newPointData = JSON.parse(event.data);
+            const newLngLat = [newPointData.longitude, newPointData.latitude];
+            path.push(newLngLat);
+            polyline.setPath(path);
+            marker.setPosition(newLngLat);
+            map.setCenter(newLngLat);
+        };
+    }
+
+    const mockRoute = [
+        [116.397428, 39.90923], [116.398000, 39.90923], [116.399000, 39.90923],
+        [116.399000, 39.90800], [116.399000, 39.90700], [116.398000, 39.90700]
+    ];
+    let mockIndex = 0;
+
+    function startSimulate() {
+        if (mockIndex >= mockRoute.length) { alert('模拟轨迹发送完毕'); mockIndex = 0; return; }
+        const point = mockRoute[mockIndex]; mockIndex++;
+        
+        // Goes through Gateway -> street-iot-adapter
+        axios.post('http://127.0.0.1:8080/api/v1/patrol/hardware/location', {
+            userId: userId, longitude: point[0], latitude: point[1], speed: 1.5, timestamp: new Date().getTime()
+        }).then(res => console.log('标准模拟上报成功', res.data));
+
+        setTimeout(startSimulate, 2000);
+    }
+
+    function startHikvisionSimulate() {
+        if (mockIndex >= mockRoute.length) { alert('模拟海康轨迹发送完毕'); mockIndex = 0; return; }
+        const point = mockRoute[mockIndex]; mockIndex++;
+
+        const hikPayload = {
+            "method": "OnEventNotify",
+            "params": {
+                "ability": "event_gps",
+                "events": [{
+                    "eventId": "EV_" + new Date().getTime(),
+                    "eventType": 327681,
+                    "srcIndex": "HK-DEVICE-001",
+                    "happenTime": new Date().toISOString(),
+                    "data": { "longitude": point[0], "latitude": point[1], "speed": 1.5, "direction": 90, "satelliteNum": 12 }
+                }]
+            }
+        };
+
+        // Goes through Gateway -> street-iot-adapter
+        axios.post('http://127.0.0.1:8080/api/v1/hikvision/event/receive', hikPayload)
+            .then(res => console.log('海康模拟推送成功', res.data));
+
+        setTimeout(startHikvisionSimulate, 2000);
+    }
+
+    window.onload = function() { initMap(); };
+</script>
+</body>
+</html>
