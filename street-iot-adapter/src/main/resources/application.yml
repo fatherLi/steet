@@ -8,3 +8,36 @@ spring:
     nacos:
       discovery:
         server-addr: 127.0.0.1:8848
+
+# ====================================================
+# 海康威视开放平台对接配置 (支持 Nacos 动态下发)
+# ====================================================
+hikvision:
+  host: "https://10.10.10.10:443"
+  app-key: "YOUR_HIK_APP_KEY"
+  app-secret: "YOUR_HIK_APP_SECRET"
+  event-topic: "event_gps"
+  
+  # 硬件设备编码与河长ID的映射关系
+  device-mapping:
+    HK-DEVICE-001: 1001
+    HK-DEVICE-002: 1002
+    MAC-AABBCCDDEE: 1003
+
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+
+# ====================================================
+# XXL-JOB Executor 配置
+# ====================================================
+xxl:
+  job:
+    admin:
+      addresses: http://127.0.0.1:8080/xxl-job-admin
+    executor:
+      appname: street-iot-adapter-executor
+      port: 9999
+

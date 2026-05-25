@@ -1,0 +1,58 @@
+=============================================================
+           河长巡河系统 (微服务版) - 业务流程与代码指南
+=============================================================
+
+一、项目模块说明
+-------------------------------------------------------------
+1. street-gateway (端口 8080)
+   - 角色：统一网关。所有的前端请求（包括页面静态资源访问、接口调用）都应该打到这个端口。
+   - 作用：根据路由规则（在 application.yml 中配置），将请求分发给背后的微服务。
+
+2. street-patrol (端口 8082)
+   - 角色：巡河核心业务服务。
+   - 作用：负责处理巡河状态（开始/结束）、操作数据库、读写Redis热点数据，以及维持与前端的WebSocket长链接推送。
+
+3. street-iot-adapter (端口 8081)
+   - 角色：物联网/海康硬件适配服务。
+   - 作用：专职负责与第三方硬件（如海康威视开放平台）交互。包含定时拉取坐标的 XXL-JOB 任务，并将干净的标准坐标通过 OpenFeign 发送给 street-patrol 模块。
+
+4. street-common
+   - 角色：公共依赖模块。
+   - 作用：存放实体类、DTO 和工具类（如 WGS84 转 GCJ02 坐标纠偏工具）。
+
+
+二、核心业务流转 (Active Polling 模式)
+-------------------------------------------------------------
+业务一：河长开始与结束巡河 (动态开关)
+1. 河长在移动端点击【开始巡河】。
+2. 请求到达网关(8080) -> 路由至 `PatrolStateController.startPatrol()`。
+3. 后端生成数据库巡河记录（状态为进行中），最关键的是：将该河长的 userId 放入 Redis 集合 `patrol:active_users` 中。
+4. 河长巡河完毕，点击【结束巡河】，调用 `PatrolStateController.endPatrol()`，将 userId 从 Redis 集合中移除。
+
+业务二：海康坐标定时主动拉取 (XXL-JOB)
+1. 在 XXL-JOB 控制台配置了任务 `patrolGpsPullJob`（每分钟执行一次）。
+2. 时间一到，触发 `ActivePatrolJobHandler.pullGpsJob()` 运行。
+3. 该方法从 Redis 的 `patrol:active_users` 集合中拿出当前正在巡河的所有人。
+4. 遍历这些 userId，通过映射表查出对应的海康设备号 (deviceCode)。
+5. 携带 deviceCode，主动向海康威视 API 发送 HTTP 请求，获取包含经纬度的定位结果。
+6. 将获取到的数据封装为标准 `LocationDTO`，调用 `PatrolFeignClient`，通过内网传递给核心服务。
+
+业务三：坐标持久化与实时推流 (数据落点)
+1. `street-patrol` 的 `PatrolInternalController` 接收到 IoT 模块传来的定位数据，转交 `PatrolServiceImpl` 处理。
+2. 执行坐标系纠偏 (WGS84 -> 高德火星坐标系 GCJ02)。
+3. 写入 Redis 的 ZSET 中，以时间戳为分数（Score），作为当天历史轨迹的高速缓存，方便前端秒开页面时画初始路线。
+4. 异步持久化存入 MySQL 的 `patrol_trajectory` 表，留作永久存档。
+5. 提取当前 userId 对应的 `PatrolWebSocketEndpoint` 客户端长链接，把刚刚这一条最新坐标 push 发给前端地图，地图路线随即延长。
+
+业务四：前端异常情况手动刷新
+1. 河长如果觉得位置卡住了，点击页面【刷新位置】按钮。
+2. 请求打到网关 -> 路由至 IoT 模块的 `HikvisionReceiverController.manualPull()` 接口。
+3. 该接口无视每分钟定时器，直接触发一次海康接口调用，并强制走完一遍落库+推流逻辑，让前端立刻动起来。
+
+
+三、如何看懂代码 (阅读顺序建议)
+-------------------------------------------------------------
+1. 先看 `street-patrol` 下的 `PatrolStateController` -> 明白“开始/结束”是如何改变 Redis 里的状态的。
+2. 再看 `street-iot-adapter` 下的 `ActivePatrolJobHandler` -> 这是整个定时拉取的发动机，看懂它是怎么根据 Redis 状态去拉取海康数据的。
+3. 接着看 `street-patrol` 下的 `PatrolServiceImpl` 中的 `receiveLocation()` 方法 -> 这里是核心，仔细看它是怎么一步步转坐标、存 Redis、存 MySQL 和推 WebSocket 的。
+4. 最后看一下前端 `map.html` -> 里面有发起 WebSocket 连接以及接收消息画线的全过程。
